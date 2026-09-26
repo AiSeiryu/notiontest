@@ -7,11 +7,11 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'com.seiryu.sunoexport.s10e'
+        applicationId 'com.seiryu.sunoexport.s10e.url'
         minSdk 26
         targetSdk 31
-        versionCode 2
-        versionName '0.1.1-s10e'
+        versionCode 3
+        versionName '0.2.0-url'
     }
 
     signingConfigs {

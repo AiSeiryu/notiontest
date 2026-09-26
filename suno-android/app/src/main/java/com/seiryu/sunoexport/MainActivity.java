@@ -1,16 +1,21 @@
 package com.seiryu.sunoexport;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ContentUris;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.graphics.Typeface;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.widget.Button;
 import android.widget.EditText;
@@ -28,11 +33,18 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 public class MainActivity extends Activity {
     private static final int PICK_AUDIO = 1001;
+    private static final int READ_AUDIO_PERMISSION = 1002;
+    private static final Pattern SUNO_LINK = Pattern.compile(
+            "https://(?:www\\.)?suno\\.com/(?:s|song|hook)/[^\\s?#]+(?:\\?[^\\s#]+)?",
+            Pattern.CASE_INSENSITIVE);
+
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Handler ui = new Handler(Looper.getMainLooper());
 
@@ -46,10 +58,18 @@ public class MainActivity extends Activity {
     private EditText lyricsInput;
     private EditText labUrlInput;
     private EditText assetIndexInput;
+    private String incomingSunoUrl = "";
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         showHome();
+        handleIncomingIntent(getIntent());
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleIncomingIntent(intent);
     }
 
     @Override protected void onDestroy() {
@@ -66,7 +86,7 @@ public class MainActivity extends Activity {
         setContentView(scroll);
 
         body.addView(text("Suno Export Toolkit", 26, true));
-        body.addView(text("Samsung S10e / Android 12 • светлая тема", 14, false));
+        body.addView(text("Samsung S10e / Android 12 • светлая тема • Share flow", 14, false));
 
         LinearLayout nav = new LinearLayout(this);
         nav.setOrientation(LinearLayout.HORIZONTAL);
@@ -94,10 +114,11 @@ public class MainActivity extends Activity {
 
     private void buildSunoUrl() {
         clearBelowHeader();
-        body.addView(text("Скачать / открыть песню по Suno URL", 21, true));
-        body.addView(text("Вставь публичную ссылку вида https://suno.com/s/… Сначала приложение попробует получить данные трека. Затем можно открыть страницу Suno или внешний UseSuno Downloader.", 14, false));
+        body.addView(text("Suno URL", 21, true));
+        body.addView(text("Вставь ссылку или отправь её сюда через системную кнопку «Поделиться».", 14, false));
 
         sunoUrlInput = field("https://suno.com/s/...");
+        if (!incomingSunoUrl.isEmpty()) sunoUrlInput.setText(incomingSunoUrl);
         body.addView(sunoUrlInput);
 
         LinearLayout row = new LinearLayout(this);
@@ -114,24 +135,33 @@ public class MainActivity extends Activity {
 
         Button openSuno = button("Открыть трек в Suno");
         Button openUseSuno = button("UseSuno Downloader — открыть сайт");
+        Button latest = button("Найти последний аудиофайл в Download");
         body.addView(openSuno);
         body.addView(openUseSuno);
+        body.addView(latest);
 
-        body.addView(text("Для UseSuno приложение копирует Suno-ссылку в буфер обмена и открывает downloader в браузере. На сайте останется только вставить ссылку.", 12, false));
+        body.addView(text(
+                "UseSuno: ссылка копируется в буфер и открывается downloader. После скачивания вернись сюда и нажми «Найти последний аудиофайл», либо выбери файл вручную во вкладке «Файл».",
+                12, false));
 
         paste.setOnClickListener(v -> pasteClipboard());
         load.setOnClickListener(v -> loadSunoInfo());
         openSuno.setOnClickListener(v -> openCurrentSuno());
         openUseSuno.setOnClickListener(v -> openUseSuno());
+        latest.setOnClickListener(v -> findLatestDownload());
     }
 
     private void buildFile() {
         clearBelowHeader();
-        body.addView(text("Локальный файл / Backup Manager", 21, true));
-        body.addView(text("Если аудиофайл уже есть на телефоне, можно сохранить его вместе с metadata и lyrics в отдельную папку и ZIP.", 14, false));
+        body.addView(text("Файл / Backup Manager", 21, true));
+        body.addView(text("Выбери аудиофайл или используй кнопку поиска последней загрузки.", 14, false));
+
         Button pick = button("Выбрать аудиофайл");
+        Button latest = button("Найти последний аудиофайл в Download");
         body.addView(pick);
+        body.addView(latest);
         pick.setOnClickListener(v -> pickAudio());
+        latest.setOnClickListener(v -> findLatestDownload());
 
         titleInput = field("Название (необязательно)");
         creatorInput = field("Автор (необязательно)");
@@ -140,6 +170,10 @@ public class MainActivity extends Activity {
         body.addView(titleInput);
         body.addView(creatorInput);
         body.addView(lyricsInput);
+
+        if (selectedAudio != null && titleInput.getText().toString().trim().isEmpty()) {
+            titleInput.setText(stripExt(displayName(selectedAudio)));
+        }
 
         Button export = button("Создать backup package");
         body.addView(export);
@@ -167,7 +201,33 @@ public class MainActivity extends Activity {
         scan.setOnClickListener(v -> scanLab());
         download.setOnClickListener(v -> downloadLab());
 
-        body.addView(text("Если lab_server.py запущен на ПК, используй локальный IP компьютера, например 192.168.1.34, а не 127.0.0.1.", 12, false));
+        body.addView(text("Если lab_server.py запущен на ПК, используй локальный IP компьютера, например 192.168.1.34.", 12, false));
+    }
+
+    private void handleIncomingIntent(Intent intent) {
+        if (intent == null) return;
+        String candidate = null;
+        String action = intent.getAction();
+
+        if (Intent.ACTION_VIEW.equals(action) && intent.getData() != null) {
+            candidate = intent.getData().toString();
+        } else if (Intent.ACTION_SEND.equals(action) && "text/plain".equals(intent.getType())) {
+            candidate = intent.getStringExtra(Intent.EXTRA_TEXT);
+        }
+
+        String found = extractSunoUrl(candidate);
+        if (found != null) {
+            incomingSunoUrl = found;
+            buildSunoUrl();
+            sunoUrlInput.setText(found);
+            setStatus("Suno-ссылка получена через «Поделиться».");
+        }
+    }
+
+    private static String extractSunoUrl(String text) {
+        if (text == null) return null;
+        Matcher m = SUNO_LINK.matcher(text);
+        return m.find() ? m.group() : null;
     }
 
     private void pasteClipboard() {
@@ -177,11 +237,17 @@ public class MainActivity extends Activity {
             return;
         }
         CharSequence cs = cm.getPrimaryClip().getItemAt(0).coerceToText(this);
-        if (cs != null) sunoUrlInput.setText(cs.toString().trim());
+        String found = cs == null ? null : extractSunoUrl(cs.toString());
+        if (found != null) {
+            incomingSunoUrl = found;
+            sunoUrlInput.setText(found);
+        } else if (cs != null) {
+            sunoUrlInput.setText(cs.toString().trim());
+        }
     }
 
     private String currentSunoUrl() {
-        return sunoUrlInput == null ? "" : sunoUrlInput.getText().toString().trim();
+        return sunoUrlInput == null ? incomingSunoUrl : sunoUrlInput.getText().toString().trim();
     }
 
     private void loadSunoInfo() {
@@ -189,6 +255,7 @@ public class MainActivity extends Activity {
         try { SunoPage.validate(url); }
         catch (Exception e) { setStatus("Ошибка ссылки: " + e.getMessage()); return; }
 
+        incomingSunoUrl = url;
         setStatus("Получаю данные страницы Suno…");
         sunoResult.setText("Загрузка…");
         worker.submit(() -> {
@@ -204,7 +271,7 @@ public class MainActivity extends Activity {
                 });
             } catch (Exception e) {
                 ui.post(() -> {
-                    sunoResult.setText("Не удалось автоматически прочитать metadata. Ссылку всё равно можно открыть кнопками ниже.");
+                    sunoResult.setText("Metadata автоматически не прочитаны. Ссылку всё равно можно открыть кнопками ниже.");
                     setStatus("Suno: " + e.getMessage());
                 });
             }
@@ -215,6 +282,7 @@ public class MainActivity extends Activity {
         String url = currentSunoUrl();
         try {
             SunoPage.validate(url);
+            incomingSunoUrl = url;
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
         } catch (Exception e) {
             toast(e.getMessage());
@@ -225,13 +293,76 @@ public class MainActivity extends Activity {
         String url = currentSunoUrl();
         try {
             SunoPage.validate(url);
+            incomingSunoUrl = url;
             ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
             if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("Suno URL", url));
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://usesuno.com/tools/downloader/")));
-            toast("Suno URL скопирован. Вставь его в поле downloader.");
+            toast("Suno URL скопирован. Вставь его в downloader.");
         } catch (Exception e) {
             toast(e.getMessage());
         }
+    }
+
+    private void findLatestDownload() {
+        if (Build.VERSION.SDK_INT <= 32 && checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.READ_EXTERNAL_STORAGE}, READ_AUDIO_PERMISSION);
+            return;
+        }
+        queryLatestDownload();
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == READ_AUDIO_PERMISSION) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) queryLatestDownload();
+            else toast("Без разрешения выбери файл вручную во вкладке «Файл».");
+        }
+    }
+
+    private void queryLatestDownload() {
+        worker.submit(() -> {
+            Uri foundUri = null;
+            String foundName = null;
+            try {
+                String[] projection = {
+                        MediaStore.Audio.Media._ID,
+                        MediaStore.Audio.Media.DISPLAY_NAME,
+                        MediaStore.Audio.Media.DATE_ADDED,
+                        MediaStore.Audio.Media.RELATIVE_PATH
+                };
+                String selection = MediaStore.Audio.Media.RELATIVE_PATH + " LIKE ?";
+                String[] args = new String[]{"Download/%"};
+                try (Cursor c = getContentResolver().query(
+                        MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                        projection,
+                        selection,
+                        args,
+                        MediaStore.Audio.Media.DATE_ADDED + " DESC")) {
+                    if (c != null && c.moveToFirst()) {
+                        long id = c.getLong(c.getColumnIndexOrThrow(MediaStore.Audio.Media._ID));
+                        foundName = c.getString(c.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME));
+                        foundUri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id);
+                    }
+                }
+            } catch (Exception e) {
+                final String msg = e.getMessage();
+                ui.post(() -> setStatus("Не удалось прочитать Download: " + msg));
+                return;
+            }
+
+            final Uri u = foundUri;
+            final String name = foundName;
+            ui.post(() -> {
+                if (u == null) {
+                    setStatus("Аудиофайлы в Download не найдены. Выбери файл вручную.");
+                    return;
+                }
+                selectedAudio = u;
+                buildFile();
+                if (titleInput != null) titleInput.setText(stripExt(name == null ? "audio" : name));
+                setStatus("Последний файл выбран: " + (name == null ? u.toString() : name));
+            });
+        });
     }
 
     private void pickAudio() {
@@ -271,8 +402,9 @@ public class MainActivity extends Activity {
                 String metadata = "{\n" +
                         "  \"title\": \"" + json(title) + "\",\n" +
                         "  \"creator\": \"" + json(creator) + "\",\n" +
+                        "  \"source_url\": \"" + json(incomingSunoUrl) + "\",\n" +
                         "  \"original_file\": \"" + json(originalName) + "\",\n" +
-                        "  \"created_by\": \"Suno Export Toolkit Android URL 0.2\"\n" +
+                        "  \"created_by\": \"Suno Export Toolkit Android 0.3\"\n" +
                         "}\n";
                 Storage.writeDownload(this, dir, "metadata.json", "application/json", metadata.getBytes(StandardCharsets.UTF_8));
                 if (!lyrics.isEmpty()) Storage.writeDownload(this, dir, "lyrics.txt", "text/plain", lyrics.getBytes(StandardCharsets.UTF_8));
@@ -410,6 +542,7 @@ public class MainActivity extends Activity {
     private static String clean(String v, String fallback) { String s = v == null ? "" : v.trim(); return s.isEmpty() ? fallback : s; }
     private static String sanitize(String s) { return s.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_").replaceAll("\\s+", " ").trim(); }
     private static String json(String s) { return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r"); }
+
     private static String mimeFor(String name) {
         String n = name.toLowerCase();
         if (n.endsWith(".mp3")) return "audio/mpeg";

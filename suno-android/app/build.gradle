@@ -7,14 +7,19 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'com.seiryu.sunoexport'
-        minSdk 29
-        targetSdk 35
-        versionCode 1
-        versionName '0.1.0'
+        applicationId 'com.seiryu.sunoexport.s10e'
+        minSdk 26
+        targetSdk 31
+        versionCode 2
+        versionName '0.1.1-s10e'
     }
 
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+            v1SigningEnabled true
+            v2SigningEnabled true
+        }
         release {
             minifyEnabled false
         }

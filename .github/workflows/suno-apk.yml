@@ -1,9 +1,9 @@
-name: Build Suno Android APK
+name: Build Suno Android URL APK
 
 on:
   push:
     branches:
-      - suno-apk-build-20260926
+      - suno-apk-url-ui-20260926
     paths:
       - 'suno-android/**'
       - '.github/workflows/suno-apk.yml'
@@ -44,11 +44,11 @@ jobs:
         run: gradle -p suno-android --no-daemon clean assembleDebug
 
       - name: Copy APK
-        run: cp suno-android/app/build/outputs/apk/debug/app-debug.apk SunoExportToolkit-Android-debug.apk
+        run: cp suno-android/app/build/outputs/apk/debug/app-debug.apk SunoExportToolkit-S10e-URL.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SunoExportToolkit-Android-debug
-          path: SunoExportToolkit-Android-debug.apk
+          name: SunoExportToolkit-S10e-URL
+          path: SunoExportToolkit-S10e-URL.apk
           if-no-files-found: error

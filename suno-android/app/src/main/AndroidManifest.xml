@@ -4,11 +4,11 @@
 
     <application
         android:allowBackup="true"
-        android:label="Suno Export Toolkit"
+        android:label="Suno Export Toolkit S10e"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="true">
         <activity
-            android:name=".MainActivity"
+            android:name="com.seiryu.sunoexport.MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
